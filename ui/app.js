@@ -178,3 +178,13 @@ $("again").addEventListener("click", () => { show("setup"); refreshDrives(); });
 // keep the drive list fresh while the user is on the setup screen
 setInterval(() => { if (!$("setup").hidden && document.activeElement !== $("drive-select")) refreshDrives(); }, 4000);
 refreshDrives();
+
+// splash: remove from the page once its fade-out finishes (or when clicked)
+(() => {
+  const sp = $("splash");
+  if (!sp) return;
+  const hide = () => sp.classList.add("gone");
+  sp.addEventListener("animationend", (e) => { if (e.animationName === "sp-out") hide(); });
+  sp.addEventListener("click", hide);
+  setTimeout(hide, 4000); // safety net
+})();
