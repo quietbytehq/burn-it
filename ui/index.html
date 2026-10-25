@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Burn It!</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <img src="logo.svg" alt="" class="logo">
+    <div>
+      <h1>Burn It!</h1>
+      <p class="sub">Bootable USB drives from Linux and Windows ISOs</p>
+    </div>
+  </header>
+
+  <main id="setup">
+    <section class="card" id="step-iso">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h2>Choose an image</h2>
+        <div class="row">
+          <div class="value" id="iso-name">No ISO selected</div>
+          <button id="pick-iso" class="secondary">Browse…</button>
+        </div>
+        <div class="badge-row" id="iso-meta" hidden>
+          <span class="badge" id="iso-kind"></span>
+          <span class="muted" id="iso-size"></span>
+        </div>
+        <p class="note" id="iso-note" hidden></p>
+      </div>
+    </section>
+
+    <section class="card" id="step-drive">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h2>Choose a USB drive</h2>
+        <div class="row">
+          <select id="drive-select" disabled><option>Looking for USB drives…</option></select>
+          <button id="refresh" class="icon" title="Refresh drives" aria-label="Refresh drives">⟳</button>
+        </div>
+        <p class="muted small" id="drive-hint">Only removable USB drives are shown. Your computer's internal disks are never listed.</p>
+      </div>
+    </section>
+
+    <details class="card advanced">
+      <summary>Advanced options</summary>
+      <label class="field">Write mode
+        <select id="mode">
+          <option value="auto">Automatic (recommended)</option>
+          <option value="raw">Linux / hybrid image — copy byte-for-byte</option>
+          <option value="windows">Windows installer — FAT32, split large files</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="verify" checked> Verify after writing (Linux / raw mode)</label>
+    </details>
+
+    <button id="burn" class="primary" disabled>Burn It!</button>
+  </main>
+
+  <main id="working" hidden>
+    <section class="card center">
+      <img src="logo.svg" alt="" class="flame" id="flame">
+      <h2 id="stage-title">Preparing…</h2>
+      <p class="muted" id="stage-msg"></p>
+      <div class="bar"><div class="fill" id="bar-fill"></div></div>
+      <div class="stats"><span id="pct">0%</span><span id="speed"></span></div>
+      <p class="muted small">Don't unplug the USB drive until Burn It! says it's done.</p>
+    </section>
+  </main>
+
+  <main id="finished" hidden>
+    <section class="card center">
+      <div class="big-icon" id="result-icon">✓</div>
+      <h2 id="result-title">Done!</h2>
+      <p class="muted" id="result-msg"></p>
+      <button id="again" class="primary">Burn another</button>
+    </section>
+  </main>
+
+  <footer>Free &amp; open source · Quiet Byte</footer>
+  <script src="app.js"></script>
+</body>
+</html>
