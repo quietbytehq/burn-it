@@ -3,7 +3,7 @@ name = "burn-it"
 version = "0.1.0"
 description = "Burn It! — write Linux and Windows ISOs to USB drives, on Linux and Windows"
 authors = ["Quiet Byte"]
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/quietbytehq/burn-it"
 edition = "2021"
 

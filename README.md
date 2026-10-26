@@ -57,4 +57,4 @@ Built with [Tauri 2](https://tauri.app) (Rust + a plain HTML/CSS/JS interface, n
 - Multi-language UI
 
 ## License
-MIT. Free for everyone to use, share and build on, including commercially.
+Apache-2.0. Free for everyone to use, share and build on, including commercially.
