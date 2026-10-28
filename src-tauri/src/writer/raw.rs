@@ -1,7 +1,9 @@
 //! Byte-for-byte image writing (Linux ISOs and other hybrid images).
 
 use super::{human, Job, Progress, Reporter};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 const CHUNK: usize = 4 * 1024 * 1024;
@@ -55,16 +57,16 @@ pub fn write(job: &Job, report: Reporter) -> anyhow::Result<()> {
     drop_cache(&dev);
 
     if job.verify {
-        verify(job, total, report)?;
+        verify(job, &mut dev, total, report)?;
     }
 
     finish_device(job)?;
     Ok(())
 }
 
-fn verify(job: &Job, total: u64, report: Reporter) -> anyhow::Result<()> {
+fn verify(job: &Job, dev: &mut File, total: u64, report: Reporter) -> anyhow::Result<()> {
     let mut iso = File::open(&job.iso)?;
-    let mut dev = OpenOptions::new().read(true).open(&job.device)?;
+    dev.seek(SeekFrom::Start(0))?;
     let mut a = vec![0u8; CHUNK];
     let mut b = vec![0u8; CHUNK];
     let mut done = 0u64;
@@ -75,7 +77,7 @@ fn verify(job: &Job, total: u64, report: Reporter) -> anyhow::Result<()> {
             break;
         }
         let padded = pad_len(n);
-        read_full(&mut dev, &mut b[..padded])?;
+        read_full(dev, &mut b[..padded])?;
         if a[..n] != b[..n] {
             anyhow::bail!("Verification failed at {} — the USB drive may be faulty or fake-capacity.", human(done));
         }
@@ -100,15 +102,16 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
     Ok(filled)
 }
 
+/// Linux: unmount and open the stick through UDisks2 (it shows the password prompt).
 #[cfg(target_os = "linux")]
 fn open_device(job: &Job) -> anyhow::Result<File> {
-    super::windows_iso::unmount_all(&job.device)?;
-    let f = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&job.device)
-        .map_err(|e| anyhow::anyhow!("Cannot open {} for writing: {}", job.device, e))?;
-    Ok(f)
+    let ud = crate::udisks::UDisks::connect()?;
+    let objs = ud.objects()?;
+    let disk = ud
+        .block_for_device(&objs, &job.device)
+        .ok_or_else(|| anyhow::anyhow!("{} was unplugged.", job.device))?;
+    ud.unmount_all(&disk)?;
+    ud.open_device(&disk)
 }
 
 #[cfg(windows)]
@@ -137,7 +140,14 @@ fn drop_cache(_f: &File) {}
 
 #[cfg(target_os = "linux")]
 fn finish_device(job: &Job) -> anyhow::Result<()> {
-    let _ = crate::platform::run("blockdev", &["--rereadpt", &job.device]);
+    // ask the kernel/UDisks to pick up the new partition table
+    if let Ok(ud) = crate::udisks::UDisks::connect() {
+        if let Ok(objs) = ud.objects() {
+            if let Some(disk) = ud.block_for_device(&objs, &job.device) {
+                ud.rescan(&disk);
+            }
+        }
+    }
     Ok(())
 }
 

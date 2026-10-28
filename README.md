@@ -22,17 +22,19 @@ Get the latest installer from [Releases](../../releases):
 | Fedora / openSUSE | `burn-it-x.y.z-1.x86_64.rpm` |
 | Windows 10 / 11 | `Burn It!_x.y.z_x64-setup.exe` |
 
-On Linux, Burn It! asks for your password only when it is about to write (through the standard system prompt). On Windows it asks for administrator rights when it starts.
+On Linux, Burn It! never runs as root: all disk work goes through the system's UDisks2 service (the one GNOME Disks uses), which asks for your password with the normal system prompt when it's about to write. On Windows it asks for administrator rights when it starts.
+
+**Snap:** `sudo snap install burn-it`. If it can't reach the disk service, run `sudo snap connect burn-it:udisks2`.
 
 ### Linux requirements
-Installed automatically with the package: `pkexec` (polkit), `parted`, `dosfstools`, `wimtools`/`wimlib-utils`, `util-linux`. The kernel needs the `udf` module to open Windows ISOs (standard on all desktop distros).
+Installed automatically with the package: `udisks2`, `dosfstools`, `wimtools`/`wimlib-utils`. Opening Windows ISOs needs the kernel's `udf` file system (standard on desktop distros).
 
 ## How it works
 
 | Image | What Burn It! does |
 |---|---|
-| Hybrid (Linux, most others) | Raw block copy → flush → read-back verification |
-| Windows installer | MBR + one FAT32 partition (`BURNIT`) → copy files → split `install.wim` into `.swm` parts under 4 GB (`wimlib` on Linux, built-in `DISM` on Windows) |
+| Hybrid (Linux, most others) | Raw block copy (device opened through UDisks2) → flush → read-back verification |
+| Windows installer | MBR + one FAT32 partition (`BURNIT`), created and mounted by UDisks2 on Linux → copy files → split `install.wim` into `.swm` parts under 4 GB (`wimlib` on Linux, built-in `DISM` on Windows) |
 
 On Windows, FAT32 partitions are limited to 32 GB (a Windows formatting limit); the rest of a bigger stick stays unused.
 

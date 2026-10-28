@@ -16,82 +16,60 @@ pub struct Drive {
 
 #[cfg(target_os = "linux")]
 pub fn list() -> anyhow::Result<Vec<Drive>> {
-    use serde_json::Value;
-    let out = std::process::Command::new("lsblk")
-        .args(["-J", "-b", "-o", "NAME,PATH,SIZE,MODEL,VENDOR,TRAN,RM,HOTPLUG,TYPE,MOUNTPOINT,RO"])
-        .output()?;
-    if !out.status.success() {
-        anyhow::bail!("lsblk failed: {}", String::from_utf8_lossy(&out.stderr));
-    }
-    let v: Value = serde_json::from_slice(&out.stdout)?;
+    use crate::udisks::*;
+    let ud = UDisks::connect()?;
+    let objs = ud.objects()?;
+    Ok(linux_from_objects(&objs))
+}
+
+/// Whole, writable, removable/USB disks that hold no system mounts, from UDisks2's object list.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_from_objects(objs: &crate::udisks::Objects) -> Vec<Drive> {
+    use crate::udisks::*;
+    // Debug builds only: lets the test-suite use loop devices as stand-in USB drives.
+    let allow_loop = cfg!(debug_assertions) && std::env::var("BURNIT_TEST_ANY_DEVICE").as_deref() == Ok("1");
+    const SYSTEM: &[&str] = &["/", "/boot", "/boot/efi", "/efi", "/home", "/usr", "/var"];
     let mut drives = Vec::new();
-    for d in v["blockdevices"].as_array().cloned().unwrap_or_default() {
-        if let Some(drive) = linux_candidate(&d) {
-            drives.push(drive);
+    for (path, ifs) in objs {
+        let Some(block) = ifs.get(I_BLOCK) else { continue };
+        if ifs.contains_key(I_PART) || get_bool(block, "ReadOnly") || get_u64(block, "Size") == 0 {
+            continue; // partitions, read-only and empty card readers are never targets
         }
-    }
-    Ok(drives)
-}
-
-#[cfg(target_os = "linux")]
-fn as_bool(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::String(s) => s == "1" || s == "true",
-        serde_json::Value::Number(n) => n.as_u64() == Some(1),
-        _ => false,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn as_u64(v: &serde_json::Value) -> u64 {
-    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0)
-}
-
-#[cfg(target_os = "linux")]
-fn collect_mounts(d: &serde_json::Value, out: &mut Vec<String>) {
-    if let Some(m) = d["mountpoint"].as_str() {
-        out.push(m.to_string());
-    }
-    if let Some(m) = d["mountpoints"].as_array() {
-        for x in m.iter().filter_map(|x| x.as_str()) {
-            out.push(x.to_string());
+        let drive_path = get_path(block, "Drive");
+        let drive = objs.iter().find(|(p, _)| p.as_str() == drive_path).and_then(|(_, i)| i.get(I_DRIVE));
+        let (name, bus) = match drive {
+            Some(d) => {
+                let bus = get_str(d, "ConnectionBus").to_lowercase();
+                let removable = bus == "usb" || get_bool(d, "Removable") || get_bool(d, "MediaRemovable");
+                if !removable || get_bool(block, "HintSystem") && bus != "usb" {
+                    continue;
+                }
+                let name = format!("{} {}", get_str(d, "Vendor"), get_str(d, "Model")).trim().to_string();
+                (if name.is_empty() { "USB drive".to_string() } else { name }, if bus.is_empty() { "removable".into() } else { bus })
+            }
+            None if allow_loop && ifs.contains_key(I_LOOP) => ("Test loop device".to_string(), "loop".to_string()),
+            None => continue,
+        };
+        let mut mounts = Vec::new();
+        for part in crate::udisks::UDisks::disk_and_partitions(objs, path.as_str()) {
+            if let Some(fs) = objs.iter().find(|(p, _)| p.as_str() == part).and_then(|(_, i)| i.get(I_FS)) {
+                mounts.extend(get_bytestr_list(fs, "MountPoints"));
+            }
         }
+        if mounts.iter().any(|m| SYSTEM.contains(&m.as_str())) {
+            continue;
+        }
+        drives.push(Drive {
+            device: get_bytestr(block, "Device"),
+            number: None,
+            name,
+            size: get_u64(block, "Size"),
+            bus,
+            mountpoints: mounts,
+        });
     }
-    for c in d["children"].as_array().cloned().unwrap_or_default() {
-        collect_mounts(&c, out);
-    }
-}
-
-/// Returns a drive only if it is a whole, writable, removable/USB disk that holds no system mounts.
-#[cfg(target_os = "linux")]
-pub(crate) fn linux_candidate(d: &serde_json::Value) -> Option<Drive> {
-    if d["type"].as_str() != Some("disk") || as_bool(&d["ro"]) {
-        return None;
-    }
-    let tran = d["tran"].as_str().unwrap_or("").to_lowercase();
-    let removable = tran == "usb" || as_bool(&d["rm"]) || as_bool(&d["hotplug"]);
-    let size = as_u64(&d["size"]);
-    if !removable || size == 0 {
-        return None;
-    }
-    let mut mounts = Vec::new();
-    collect_mounts(d, &mut mounts);
-    const SYSTEM: &[&str] = &["/", "/boot", "/boot/efi", "/efi", "/home", "/usr", "/var", "[SWAP]"];
-    if mounts.iter().any(|m| SYSTEM.contains(&m.as_str())) {
-        return None;
-    }
-    let vendor = d["vendor"].as_str().unwrap_or("").trim();
-    let model = d["model"].as_str().unwrap_or("").trim();
-    let name = format!("{} {}", vendor, model).trim().to_string();
-    Some(Drive {
-        device: d["path"].as_str().map(String::from).unwrap_or_else(|| format!("/dev/{}", d["name"].as_str().unwrap_or("?"))),
-        number: None,
-        name: if name.is_empty() { "USB drive".into() } else { name },
-        size,
-        bus: if tran.is_empty() { "removable".into() } else { tran },
-        mountpoints: mounts,
-    })
+    drives.sort_by(|a, b| a.device.cmp(&b.device));
+    drives
 }
 
 #[cfg(target_os = "windows")]
@@ -136,19 +114,3 @@ pub fn list() -> anyhow::Result<Vec<Drive>> {
     anyhow::bail!("This operating system is not supported yet.")
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-    #[test]
-    fn filters_system_and_internal_disks() {
-        let usb: serde_json::Value = serde_json::json!({"name":"sdb","path":"/dev/sdb","size":16008609792u64,"model":"Ultra","vendor":"SanDisk","tran":"usb","rm":true,"hotplug":true,"type":"disk","ro":false,"mountpoint":null,
-            "children":[{"name":"sdb1","mountpoint":"/media/x"}]});
-        let nvme = serde_json::json!({"name":"nvme0n1","path":"/dev/nvme0n1","size":512110190592u64,"tran":"nvme","rm":false,"hotplug":false,"type":"disk","ro":false,
-            "children":[{"name":"nvme0n1p2","mountpoint":"/"}]});
-        let usb_root = serde_json::json!({"name":"sdc","path":"/dev/sdc","size":1u64<<34,"tran":"usb","rm":false,"hotplug":true,"type":"disk","ro":false,
-            "children":[{"name":"sdc1","mountpoint":"/"}]});
-        assert!(linux_candidate(&usb).is_some());
-        assert!(linux_candidate(&nvme).is_none());
-        assert!(linux_candidate(&usb_root).is_none());
-    }
-}

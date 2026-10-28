@@ -1,6 +1,8 @@
 pub mod drives;
 pub mod iso;
 pub mod platform;
+#[cfg(target_os = "linux")]
+pub mod udisks;
 pub mod writer;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,68 +49,14 @@ fn start_burn(app: AppHandle, job: Job) -> Result<(), String> {
     Ok(())
 }
 
-/// Linux: the GUI runs as the normal user, so the actual burn runs in a
-/// privileged copy of this program started through pkexec (password prompt).
-#[cfg(target_os = "linux")]
-fn run_job(job: &Job, emit: &dyn Fn(Progress)) -> anyhow::Result<()> {
-    use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
-
-    if unsafe { libc::geteuid() } == 0 {
-        let mut f = |p: Progress| emit(p);
-        return writer::burn(job, &mut f);
-    }
-    let exe = std::env::current_exe()?;
-    if std::env::var_os("APPIMAGE").is_some() {
-        anyhow::bail!("The AppImage build cannot ask for admin rights yet. Please install the .deb or .rpm package.");
-    }
-    emit(Progress::new("prepare", "Waiting for your password…", 0, 1));
-    let mut child = Command::new("pkexec")
-        .arg(&exe)
-        .arg("--helper")
-        .arg(serde_json::to_string(job)?)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Could not start pkexec ({}). Install polkit / pkexec.", e))?;
-
-    let stdout = child.stdout.take().unwrap();
-    let mut finished = false;
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        if let Some(json) = line.strip_prefix("BURNIT:") {
-            if let Ok(p) = serde_json::from_str::<Progress>(json) {
-                if p.stage == "done" || p.stage == "error" {
-                    finished = true;
-                }
-                emit(p);
-            }
-        }
-    }
-    let status = child.wait()?;
-    if !finished {
-        match status.code() {
-            Some(126) | Some(127) => anyhow::bail!("Admin permission was not granted. Nothing was written."),
-            _ => {
-                let mut err = String::new();
-                if let Some(mut e) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = e.read_to_string(&mut err);
-                }
-                anyhow::bail!("The helper stopped unexpectedly. {}", err.trim());
-            }
-        }
-    }
-    Ok(())
-}
-
+/// Linux: runs in-process as the normal user — UDisks2 asks for permission when needed.
 /// Windows: the whole app already runs as Administrator (see the app manifest).
-#[cfg(not(target_os = "linux"))]
 fn run_job(job: &Job, emit: &dyn Fn(Progress)) -> anyhow::Result<()> {
     let mut f = |p: Progress| emit(p);
     writer::burn(job, &mut f)
 }
 
-/// Entry point for `burn-it --helper '<job json>'` (runs as root, prints progress lines).
+/// Command-line mode: `burn-it --helper '<job json>'` burns without the GUI and prints progress lines.
 pub fn run_helper(job_json: &str) -> i32 {
     use std::io::Write;
     let print = |p: &Progress| {

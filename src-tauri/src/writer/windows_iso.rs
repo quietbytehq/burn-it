@@ -4,7 +4,9 @@
 use super::copy;
 use super::{Job, Progress, Reporter};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 pub const LABEL: &str = "BURNIT";
 
@@ -144,112 +146,75 @@ fn free_space(p: &Path) -> Option<u64> {
     Some(s.f_bavail as u64 * s.f_frsize as u64)
 }
 
-#[cfg(target_os = "linux")]
-pub fn partition_path(dev: &str, n: u32) -> String {
-    if dev.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-        format!("{}p{}", dev, n)
-    } else {
-        format!("{}{}", dev, n)
-    }
-}
 
-/// Unmounts every mounted file system on `dev` and its partitions.
+/// Unmounts the UDisks mount and detaches loop devices when dropped (also on errors).
 #[cfg(target_os = "linux")]
-pub fn unmount_all(dev: &str) -> anyhow::Result<()> {
-    let out = crate::platform::run("lsblk", &["-nrpo", "NAME,MOUNTPOINT", dev])?;
-    for l in String::from_utf8_lossy(&out.stdout).lines() {
-        let mut it = l.splitn(2, ' ');
-        let (name, mp) = (it.next().unwrap_or(""), it.next().unwrap_or("").trim());
-        if mp.is_empty() {
-            continue;
-        }
-        if mp == "[SWAP]" {
-            let _ = crate::platform::run("swapoff", &[name]);
-            continue;
-        }
-        let mp = mp.replace("\\x20", " ");
-        if crate::platform::run("umount", &[&mp]).is_err() {
-            crate::platform::run("umount", &["-l", &mp])
-                .map_err(|_| anyhow::anyhow!("Could not unmount {}. Close any open files on the USB drive and try again.", mp))?;
-        }
-    }
-    Ok(())
+struct Cleanup<'a> {
+    ud: &'a crate::udisks::UDisks,
+    mounts: Vec<String>,
+    loops: Vec<String>,
 }
 
 #[cfg(target_os = "linux")]
-struct EmptyDirs(Vec<PathBuf>);
-
-#[cfg(target_os = "linux")]
-impl Drop for EmptyDirs {
+impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
-        for d in &self.0 {
-            let _ = std::fs::remove_dir(d); // only ever removes empty folders
+        for m in self.mounts.iter().rev() {
+            let mut ok = false;
+            for _ in 0..10 {
+                if self.ud.unmount(m).is_ok() {
+                    ok = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            let _ = ok;
+        }
+        for l in &self.loops {
+            self.ud.loop_delete(l);
         }
     }
 }
 
-#[cfg(target_os = "linux")]
-struct Mounted(PathBuf);
-
-#[cfg(target_os = "linux")]
-impl Drop for Mounted {
-    fn drop(&mut self) {
-        let p = self.0.to_string_lossy().to_string();
-        if crate::platform::run("umount", &[&p]).is_err() {
-            let _ = crate::platform::run("umount", &["-l", &p]);
-        }
-        let _ = std::fs::remove_dir(&self.0);
-    }
-}
-
+/// Linux: everything goes through UDisks2 — no root, no pkexec.
 #[cfg(target_os = "linux")]
 pub fn write(job: &Job, report: Reporter) -> anyhow::Result<()> {
-    use crate::platform::run;
-    let dev = job.device.as_str();
+    use crate::udisks::UDisks;
+    let ud = UDisks::connect()?;
+    let objs = ud.objects()?;
+    let disk = ud
+        .block_for_device(&objs, &job.device)
+        .ok_or_else(|| anyhow::anyhow!("{} was unplugged.", job.device))?;
+    let mut clean = Cleanup { ud: &ud, mounts: vec![], loops: vec![] };
+
+    // Open the ISO first, so a bad ISO never costs the user their USB contents.
+    report(Progress::new("prepare", "Opening the ISO…", 0, 1));
+    let iso_file = std::fs::File::open(&job.iso).map_err(|e| anyhow::anyhow!("Cannot read the ISO file: {}", e))?;
+    let lp = ud.loop_setup(&iso_file)?;
+    clean.loops.push(lp.clone());
+    ud.wait_for_fs(&lp, 15)
+        .map_err(|_| anyhow::anyhow!("Could not read the files inside this ISO."))?;
+    let iso_mp = ud.mount(&lp, true)?;
+    clean.mounts.push(lp.clone());
+    if !looks_like_windows(&iso_mp) {
+        anyhow::bail!("This ISO does not look like a Windows installer (no 'sources' and 'efi' folders). Try the 'Linux / raw' mode instead.");
+    }
 
     report(Progress::new("prepare", "Unmounting the USB drive…", 0, 1));
-    unmount_all(dev)?;
+    ud.unmount_all(&disk)?;
 
     report(Progress::new("format", "Creating partition table…", 0, 1));
-    run("wipefs", &["-a", dev])?;
-    run("parted", &["-s", "-a", "optimal", dev, "mklabel", "msdos", "mkpart", "primary", "fat32", "1MiB", "100%", "set", "1", "boot", "on"])?;
-    let _ = run("partprobe", &[dev]);
-    let _ = run("udevadm", &["settle"]);
-    let part = partition_path(dev, 1);
-    let mut tries = 0;
-    while !Path::new(&part).exists() {
-        tries += 1;
-        if tries > 50 {
-            anyhow::bail!("The new partition {} did not appear.", part);
-        }
-        let _ = run("blockdev", &["--rereadpt", dev]);
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    // desktop auto-mounters can grab the new partition; make sure it is free
-    let _ = unmount_all(dev);
+    ud.format_mbr(&disk)?;
     report(Progress::new("format", "Formatting FAT32…", 0, 1));
-    run("mkfs.vfat", &["-F", "32", "-n", LABEL, &part])?;
-
-    let base = PathBuf::from(format!("/run/burn-it-{}", std::process::id()));
-    let iso_mp = base.join("iso");
-    let usb_mp = base.join("usb");
-    std::fs::create_dir_all(&iso_mp)?;
-    std::fs::create_dir_all(&usb_mp)?;
-    // dropped last: removes the (by then unmounted, empty) work folders even on errors
-    let _dirs = EmptyDirs(vec![iso_mp.clone(), usb_mp.clone(), base.clone()]);
-
-    report(Progress::new("prepare", "Opening the ISO…", 0, 1));
-    run("mount", &["-o", "loop,ro", &job.iso, &iso_mp.to_string_lossy()])
-        .map_err(|e| anyhow::anyhow!("Could not open the ISO (is the 'udf' kernel module available?): {}", e))?;
-    let iso_guard = Mounted(iso_mp.clone());
-    run("mount", &["-t", "vfat", "-o", "flush", &part, &usb_mp.to_string_lossy()])?;
-    let usb_guard = Mounted(usb_mp.clone());
+    let part = ud.create_fat32(&disk, LABEL)?;
+    ud.wait_for_fs(&part, 20)?;
+    let usb_mp = ud.mount(&part, false)?;
+    clean.mounts.insert(0, part.clone()); // unmount the stick before the ISO
 
     populate(&iso_mp, &usb_mp, report)?;
 
-    let _ = run("sync", &[]);
-    drop(usb_guard);
-    drop(iso_guard);
+    report(Progress::new("flush", "Finishing write (flushing to the drive)…", 0, 1));
+    unsafe { libc::sync() };
+    drop(clean); // unmount stick (flushes it) and the ISO, detach the loop device
     Ok(())
 }
 

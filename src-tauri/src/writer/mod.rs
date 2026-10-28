@@ -51,11 +51,6 @@ fn safety_check(job: &Job) -> anyhow::Result<()> {
     let iso_size = std::fs::metadata(&job.iso)
         .map_err(|e| anyhow::anyhow!("Cannot read the ISO file: {}", e))?
         .len();
-    // Test hook (debug builds only): lets the test-suite target loop devices.
-    #[cfg(debug_assertions)]
-    if std::env::var("BURNIT_TEST_ANY_DEVICE").as_deref() == Ok("1") {
-        return Ok(());
-    }
     let drives = crate::drives::list()?;
     let drive = drives
         .iter()

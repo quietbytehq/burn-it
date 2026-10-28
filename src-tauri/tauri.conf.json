@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Burn It!",
   "mainBinaryName": "burn-it",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "io.github.quietbytehq.burnit",
   "build": {
     "frontendDist": "../ui"
@@ -44,27 +44,17 @@
     "linux": {
       "deb": {
         "depends": [
-          "policykit-1 | pkexec",
-          "parted",
+          "udisks2",
           "dosfstools",
-          "wimtools",
-          "util-linux"
-        ],
-        "files": {
-          "/usr/share/polkit-1/actions/io.github.quietbytehq.burnit.policy": "polkit/io.github.quietbytehq.burnit.policy"
-        }
+          "wimtools"
+        ]
       },
       "rpm": {
         "depends": [
-          "polkit",
-          "parted",
+          "udisks2",
           "dosfstools",
-          "wimlib-utils",
-          "util-linux"
-        ],
-        "files": {
-          "/usr/share/polkit-1/actions/io.github.quietbytehq.burnit.policy": "polkit/io.github.quietbytehq.burnit.policy"
-        }
+          "wimlib-utils"
+        ]
       }
     },
     "windows": {

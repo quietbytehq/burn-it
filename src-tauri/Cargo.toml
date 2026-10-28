@@ -1,6 +1,6 @@
 [package]
 name = "burn-it"
-version = "0.1.0"
+version = "0.1.1"
 description = "Burn It! — write Linux and Windows ISOs to USB drives, on Linux and Windows"
 authors = ["Quiet Byte"]
 license = "Apache-2.0"
@@ -23,6 +23,9 @@ anyhow = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [profile.release]
 opt-level = "s"
