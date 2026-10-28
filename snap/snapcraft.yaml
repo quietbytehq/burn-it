@@ -1,0 +1,79 @@
+name: burn-it
+base: core24
+adopt-info: burn-it
+summary: Make bootable USB drives from Linux and Windows ISO images
+description: |
+  Burn It! writes Linux and Windows ISO images to USB drives, so you can install
+  an operating system from a stick. It runs on Linux and Windows, it is free and
+  open source, and it works fully offline with no account.
+
+  It shows only removable drives, asks you to confirm the drive you picked, and
+  asks for your administrator password only at the moment it is about to write.
+license: Apache-2.0
+icon: snap/gui/burn-it.png
+website: https://github.com/quietbytehq/burn-it
+source-code: https://github.com/quietbytehq/burn-it
+issues: https://github.com/quietbytehq/burn-it/issues
+contact: https://github.com/quietbytehq/burn-it/issues
+
+grade: stable
+# Classic is needed: Burn It! writes whole disk images straight to a USB block device
+# and starts a privileged copy of itself through pkexec. A strict snap cannot do either.
+confinement: classic
+
+platforms:
+  amd64:
+
+apps:
+  burn-it:
+    command: usr/bin/burn-it
+    common-id: io.github.quietbytehq.burn-it
+    desktop: usr/share/applications/io.github.quietbytehq.burn-it.desktop
+    environment:
+      # WebKitGTK starts its helper programs from a fixed path; point it inside the snap.
+      WEBKIT_EXEC_PATH: $SNAP/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1
+      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu:$SNAP/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+
+parts:
+  burn-it:
+    plugin: nil
+    source: .
+    build-packages:
+      - build-essential
+      - curl
+      - file
+      - pkg-config
+      - libssl-dev
+      - libwebkit2gtk-4.1-dev
+      - libgtk-3-dev
+      - librsvg2-dev
+      - libayatana-appindicator3-dev
+    stage-packages:
+      - libwebkit2gtk-4.1-0
+      - libgtk-3-0t64
+      - shared-mime-info
+    override-build: |
+      set -eu
+      craftctl default
+      # Rust (the snap build has network access).
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      . "$HOME/.cargo/env"
+      cargo build --release --manifest-path src-tauri/Cargo.toml --bin burn-it --features tauri/custom-protocol
+      install -Dm755 src-tauri/target/release/burn-it "$CRAFT_PART_INSTALL/usr/bin/burn-it"
+
+      id=io.github.quietbytehq.burn-it
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/applications"
+      cat > "$CRAFT_PART_INSTALL/usr/share/applications/$id.desktop" <<EOF
+      [Desktop Entry]
+      Type=Application
+      Name=Burn It!
+      GenericName=USB image writer
+      Comment=Make bootable USB drives from Linux and Windows ISO images
+      Exec=burn-it
+      Icon=\${SNAP}/meta/gui/burn-it.png
+      Categories=System;Utility;
+      Keywords=usb;iso;bootable;burn;installer;
+      Terminal=false
+      EOF
+
+      craftctl set version="$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)"
